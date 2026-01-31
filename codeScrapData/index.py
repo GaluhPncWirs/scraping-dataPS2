@@ -4,6 +4,8 @@ import time
 import random
 import csv
 import re
+from genreKeywords import genre_keywords
+from gamePopuler import POPULAR_PS2_GAMES
 
 URL = "https://myrient.erista.me/files/Redump/Sony%20-%20PlayStation%202/"
 
@@ -14,7 +16,7 @@ REQUEST_TIMEOUT = 10  # Timeout untuk request
 SKIP_ITEMS = ['Parent directory/', '..', '.', '../']
 SKIP_KEYWORDS = ['(demo)', '(beta)', '(sample)', '(trial)', '(proto)']
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-MAX_DATA = 500
+MAX_DATA = len(POPULAR_PS2_GAMES)
 
 # Headers untuk menghindari deteksi sebagai bot
 headers = {
@@ -31,12 +33,43 @@ def get_base_name(filename):
     base = re.sub(r'\.[^.]+$', '', base)
     return base.strip()
 
+def normalize_title(title: str) -> str:
+    title = title.lower()
+    title = re.sub(r"\(.*?\)", "", title)
+    title = re.sub(r"[^a-z0-9\s]", "", title)
+    title = re.sub(r"\s+", " ", title)
+    return title.strip()
+
+
+POPULAR_GAME_MAP = {
+    normalize_title(item["title"]): item["rating"]
+    for item in POPULAR_PS2_GAMES
+}
+
 def get_region(filename):
     """Ekstrak region dari nama file"""
     pattern = r'\(([^)]*(?:USA|Europe|Japan|Korea|Asia|World)[^)]*)\)'
     match = re.search(pattern, filename)
     return match.group(1) if match else None
 
+
+def determine_genre(game_name):
+    game_lowerCase =  game_name.lower()
+
+    for genre, keywords in genre_keywords.items():
+        for keyword in keywords :
+            if keyword in game_lowerCase:
+                return genre
+    
+    return "Action"
+
+def clean_game_title(filename):
+    name = filename.replace('.zip', '')
+    name = re.sub(r'\([^)]*\)', '', name)
+    name = re.sub(r'\[.*?\]', '', name)
+    name = re.sub(r'(Disc \d+|v\d+\.\d+)', '', name, flags=re.IGNORECASE)
+    name = ' '.join(name.split())
+    return name.strip()
 
 try:
     # Tambahkan delay sebelum request pertama
@@ -53,61 +86,61 @@ try:
     soup = BeautifulSoup(response.text, "html.parser")
 
     games_dict = {}
-    
+
     for row in soup.find_all("tr"):
         cols = row.find_all("td")
-        if len(cols) >= 3:
-            link = cols[0].find("a")
-            if link and link.get("href"):
-                file_name = link.text.strip()
+        if len(cols) < 3:
+            continue
 
-                if file_name in SKIP_ITEMS or file_name.endswith("/"):
-                    continue
+        link = cols[0].find("a")
+        if not link or not link.get("href"):
+            continue
 
-                if any(keyword in file_name.lower() for keyword in SKIP_KEYWORDS):
-                    continue
+        file_name = link.text.strip()
 
-                base_name = get_base_name(file_name)
-                region = get_region(file_name)
+        # Skip rule
+        if file_name in SKIP_ITEMS or file_name.endswith("/"):
+            continue
 
-                item_data = {
-                    "fileName": file_name,
-                    "url": URL + link.get("href"),
-                    "date": cols[1].text.strip(),
-                    "size": cols[2].text.strip(),
-                    "region": region
-                }
+        if re.match(r"^\d+", file_name):
+            continue
 
-                # Jika game belum ada, tambahkan
-                if base_name not in games_dict:
-                    games_dict[base_name] = item_data
-                else:
-                    # Prioritas region
-                    priority = {
-                        'USA': 4,
-                        'World': 3,
-                        'Europe': 2
-                    }
-                    
-                    current_priority = 0
-                    existing_priority = 0
-                
-                    if region:
-                            for key in priority:
-                                if key in region:
-                                    current_priority = priority[key]
-                                    break
-                        
-                    existing_region = games_dict[base_name]["region"]
-                    if existing_region:
-                        for key in priority:
-                            if key in existing_region:
-                                existing_priority = priority[key]
-                                break
-                    
-                    # Replace jika prioritas lebih tinggi
-                    if current_priority > existing_priority:
-                        games_dict[base_name] = item_data
+        if any(keyword in file_name.lower() for keyword in SKIP_KEYWORDS):
+            continue
+
+        clean_title = clean_game_title(file_name)
+        normalized = normalize_title(clean_title)
+
+        # ⛔ FILTER: hanya game populer
+        if normalized not in POPULAR_GAME_MAP:
+            continue
+
+        rating = POPULAR_GAME_MAP[normalized]
+
+        base_name = get_base_name(file_name)
+        region = get_region(file_name)
+
+        item_data = {
+            "fileName": file_name,
+            "cleanTitle": clean_title,
+            "url": URL + link.get("href"),
+            "size": cols[1].text.strip(),
+            "date": cols[2].text.strip(),
+            "genre": determine_genre(clean_title),
+            "rating": rating,
+            "region": region
+        }
+
+        if base_name not in games_dict:
+            games_dict[base_name] = item_data
+        else:
+            # prioritas region
+            priority = {"USA": 4, "World": 3, "Europe": 2}
+            cur = priority.get(region, 0)
+            old = priority.get(games_dict[base_name]["region"], 0)
+
+            if cur > old:
+                games_dict[base_name] = item_data
 
      # Konversi ke list
     data = list(games_dict.values())
@@ -119,9 +152,18 @@ try:
     # Simpan ke CSV
     if data:
         csv_filename = 'hasil_scraping_gamePS2.csv'
+
+        fieldnames = [
+            "fileName",
+            "cleanTitle",
+            "url",
+            "date",
+            "size",
+            "genre",
+            "rating"
+        ]
         
         with open(csv_filename, 'w', newline='', encoding='utf-8') as csvfile:
-            fieldnames = ['fileName', 'url', 'date', 'size']
             writer = csv.DictWriter(
                 csvfile, 
                 fieldnames=fieldnames, 
@@ -129,37 +171,23 @@ try:
             )
             
             writer.writeheader()
-            # Hapus kolom 'region' sebelum menulis
-            for item in data:
-                writer.writerow({k: v for k, v in item.items() if k != 'region'})
+            
+            for i, item in enumerate(data, 1):
+                writer.writerow({
+                    k: item[k] for k in fieldnames
+                })
+
+                if i % 50 == 0:
+                    print(f"Diproses: {i} game")
         
-        print(f"✓ Berhasil menyimpan {len(data)} data ke '{csv_filename}'")
-        print("  (Prioritas: USA > World > Europe > lainnya)")
-        
+        print(f"\n✓ Berhasil menyimpan {len(data)} game populer PS2")
+
         print("\nPreview data (5 baris pertama):")
         for item in data[:5]:
-            print(f"{item['fileName']} - Region: {item['region']}")
+            game_name = clean_game_title(item['fileName'])
+            print(f"{item['fileName']} → Genre: {determine_genre(game_name)}")
     else:
         print("Tidak ada data yang berhasil di-scrape")
-
-    # if data :
-    #     csv_fileName = "hasil_scraping_gamePS2.csv"
-
-    #     with open(csv_fileName, "w", newline="", encoding="utf-8") as csvfile:
-    #         fieldName = ["fileName", "url", "date", "size"]
-    #         writer = csv.DictWriter(csvfile, fieldnames=fieldName, quoting=csv.QUOTE_NONNUMERIC)
-
-    #         writer.writeheader()
-    #         writer.writerows(data)
-        
-    #     print(f"✓ Berhasil menyimpan {len(data)} data ke '{csv_fileName}'")
-    #     print(f"  (Dibatasi maksimal {MAX_DATA} data)")
-    
-    #     print("\nPreview data (5 baris pertama):")
-    #     for item in data[:5]:
-    #         print(item)
-    # else:
-    #     print("Tidak ada data yang berhasil di-scrape")
     
 except requests.exceptions.Timeout:
     print("Error: Request timeout. Server tidak merespons dalam waktu yang ditentukan.")

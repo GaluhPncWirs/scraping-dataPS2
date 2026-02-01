@@ -1,102 +1,82 @@
 import os
 import csv
 import time
-import requests
-from bs4 import BeautifulSoup
 from downloadImages import download_images
+from extractCoverImage import extract_thegamesdb_cover_image
 
 COVER_DIR = "./covers_ps2"
-os.makedirs(COVER_DIR, exist_ok=True)
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-}
-
-def extract_thegamesdb_cover_image(game_page_url):
-    r = requests.get(game_page_url, headers=HEADERS, timeout=15)
-    r.raise_for_status()
-
-    soup = BeautifulSoup(r.text, "html.parser")
-
-    covers = []
-
-    for img in soup.select("img[src*='/images/thumb/boxart/front/']"):
-        src = img.get("src")
-        if not src:
-            continue
-
-        # Normalize URL
-        if src.startswith("/"):
-            src = "https://cdn.thegamesdb.net" + src
-
-        covers.append(src)
-
-    if not covers:
-        return ""
-    return covers[0]
+DELAY_SECONDS = 3
 
 def stage3_download_thegamesdb_covers(input_file, output_file):
-    with open(input_file, 'r', encoding='utf-8') as infile, \
-         open(output_file, 'w', encoding='utf-8', newline='') as outfile:
+    os.makedirs(COVER_DIR, exist_ok=True)
 
+    with open(input_file, 'r', encoding='utf-8') as infile:
         reader = csv.DictReader(infile)
 
-        fieldnames = list(reader.fieldnames) + [
-            'coverImageUrl',
-            'coverImageLocalPath'
-        ]
+        if not reader.fieldnames:
+            print("CSV kosong atau header tidak valid")
+            return
 
-        writer = csv.DictWriter(outfile, fieldnames=fieldnames)
-        writer.writeheader()
+        fieldnames = (*reader.fieldnames,
+                      'coverImageUrl',
+                      'coverImageLocalPath')
 
-        total = 0
-        downloaded = 0
+        with open(output_file, 'w', encoding='utf-8', newline='') as outfile:
+            writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+            writer.writeheader()
 
-        for row in reader:
-            game_page = row.get('thegamesdbGamePage', '').strip()
-            row['coverImageUrl'] = ''
-            row['coverImageLocalPath'] = ''
+            total = 0
+            downloaded = 0
 
-            if not game_page:
-                writer.writerow(row)
-                continue
+            # Cache untuk menghindari extract & download berulang
+            cover_cache = {}
 
-            try:
-                print(f"🖼 Fetching cover: {row.get('cleanGameTitle', '')}")
+            for row in reader:
+                game_page = (row.get('thegamesdbGamePage') or '').strip()
+                clean_title = row.get('cleanTitle') or row.get('cleanGameTitle', '')
 
-                cover_url = extract_thegamesdb_cover_image(game_page)
+                cover_url = ''
+                local_path = ''
 
-                if cover_url:
-                    game_id = game_page.split("id=")[-1]
-                    ext = os.path.splitext(cover_url)[1]
-                    filename = f"{game_id}{ext}"
-                    save_path = os.path.join(COVER_DIR, filename)
+                if game_page:
+                    try:
+                        if game_page in cover_cache:
+                            cover_url, local_path = cover_cache[game_page]
+                        else:
+                            print(f"🖼 Fetching cover: {clean_title}")
 
-                    success = download_images(cover_url, save_path)
+                            cover_url = extract_thegamesdb_cover_image(game_page)
 
-                    if success:
-                        row['coverImageUrl'] = cover_url
-                        row['coverImageLocalPath'] = save_path
-                        downloaded += 1
+                            if cover_url:
+                                local_path = download_images(cover_url, COVER_DIR, row["cleanTitle"])
 
-                time.sleep(2)
+                                if local_path:
+                                    row["coverImageUrl"] = cover_url
+                                    row["coverImageLocalPath"] = local_path
+                                    downloaded += 1
+                                    time.sleep(DELAY_SECONDS)
 
-            except Exception as e:
-                print(f"⚠️ Cover gagal: {e}")
+                            cover_cache[game_page] = (cover_url, local_path)
 
-            writer.writerow(row)
-            total += 1
+                    except Exception as e:
+                        print(f"⚠️ Cover gagal [{clean_title}]: {e}")
 
-            if total % 50 == 0:
-                print(f"Progress: {total} game")
+                writer.writerow({
+                    **row,
+                    'coverImageUrl': cover_url,
+                    'coverImageLocalPath': local_path
+                })
 
-        print("\n=== Stage 3 selesai ===")
-        print(f"Total game      : {total}")
-        print(f"Cover terunduh  : {downloaded}")
+                total += 1
+                if total % 50 == 0:
+                    print(f"Progress: {total} game")
+
+    print("\n=== Stage 3 selesai ===")
+    print(f"Total game     : {total}")
+    print(f"Cover tersedia : {downloaded}")
+    print(f"Unique covers  : {len(cover_cache)}")
 
 input_file = "../data/tahap_2_gamePS2_game_pages.csv"
 output_file = "../data/tahap_3_thegamesdb_with_covers.csv"
 
 stage3_download_thegamesdb_covers(input_file, output_file)
-# extract_thegamesdb_cover_image("https://thegamesdb.net/search.php?name=0%20Story&platform=11,https://thegamesdb.net/game.php?id=97320")
-

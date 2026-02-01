@@ -1,5 +1,6 @@
 import requests
 import os
+import re
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -7,14 +8,34 @@ HEADERS = {
     "Referer": "https://thegamesdb.net/"
 }
 
-def download_images(url, save_path, timeout=20):
+def slugify_filename(text):
+    text = text.lower()
+    text = re.sub(r"[^\w\s-]", "", text)
+    text = re.sub(r"[\s_-]+", "_", text)
+    return text.strip("_")
+
+def download_images(image_url, save_dir, game_title, timeout=20):
+    """
+    Download image dan simpan dengan nama berdasarkan judul game
+    """
+
     try:
-        # Skip jika file sudah ada
-        if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
-            return True
+        # Tentukan ekstensi dari URL
+        ext = os.path.splitext(image_url.split("?")[0])[1].lower()
+        if ext not in [".jpg", ".jpeg", ".png", ".webp"]:
+            ext = ".jpg"  # fallback aman
+
+        filename = f"{slugify_filename(game_title)}{ext}"
+        save_path = os.path.join(save_dir, filename)
+
+        # Skip jika file valid sudah ada
+        if os.path.exists(save_path) and os.path.getsize(save_path) > 1024:
+            return save_path
+
+        os.makedirs(save_dir, exist_ok=True)
 
         r = requests.get(
-            url,
+            image_url,
             headers=HEADERS,
             stream=True,
             timeout=timeout
@@ -22,28 +43,25 @@ def download_images(url, save_path, timeout=20):
         r.raise_for_status()
 
         content_type = r.headers.get("Content-Type", "").lower()
-        if not any(x in content_type for x in ["image/jpeg", "image/png", "image/webp"]):
-            print(f"⚠️ Bukan image: {content_type}")
-            return False
-
-        # Pastikan folder ada
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        if not content_type.startswith("image/"):
+            print(f"⚠️ Skip non-image: {content_type}")
+            return ""
 
         with open(save_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
+            for chunk in r.iter_content(chunk_size=16384):
                 if chunk:
                     f.write(chunk)
 
-        # Validasi hasil
-        if os.path.getsize(save_path) < 1024:
-            print("⚠️ File terlalu kecil, kemungkinan error image")
-            os.remove(save_path)
-            return False
+        # # Validasi ukuran minimal
+        # if os.path.getsize(save_path) < 1024:
+        #     os.remove(save_path)
+        #     print("⚠️ File terlalu kecil, dihapus")
+        #     return ""
 
-        return True
+        return save_path
 
     except Exception as e:
         print(f"❌ Download gagal: {e}")
         if os.path.exists(save_path):
             os.remove(save_path)
-        return False
+        return ""

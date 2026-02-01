@@ -2,6 +2,7 @@ import csv
 import time
 import requests
 from bs4 import BeautifulSoup
+import re
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -9,57 +10,31 @@ HEADERS = {
 REQUEST_TIMEOUT = 15
 DELAY_SECONDS = 2
 
+def clean_text_for_csv(text: str) -> str:
+    if not text:
+        return ""
+
+    # Hilangkan newline & carriage return
+    text = text.replace("\r", " ").replace("\n", " ")
+
+    # Hilangkan spasi berlebih
+    text = re.sub(r"\s+", " ", text)
+
+    return text.strip()
+
 def extract_thegamesdb_game_ids(search_url):
-    response = requests.get(search_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
-
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    ids = []
-    for a in soup.select("a[href^='./game.php?id=']"):
-        href = a.get("href")
-        game_id = href.split("id=")[-1]
-        if game_id.isdigit():
-            ids.append(game_id)
-
-    return list(set(ids))  # deduplicate
-
-def extract_thegamesdb_description(game_page_url):
-    try:
-        response = requests.get(game_page_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        # TheGamesDB description biasanya di p ini
-        desc_p = soup.find("p", class_="game-overview")
-
-        if not desc_p:
-            return None
-
-        description = desc_p.get_text(separator=" ", strip=True)
-        return description
-
-    except Exception as e:
-        print(f"⚠️ Gagal ambil deskripsi: {e}")
-        return None
-
-
-def is_ps2_game(game_id):
-    url = f"https://thegamesdb.net/game.php?id={game_id}"
-
-    r = requests.get(url, headers=HEADERS, timeout=15)
+    r = requests.get(search_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
     r.raise_for_status()
 
     soup = BeautifulSoup(r.text, "html.parser")
 
-    for a in soup.select("a[href^='/platform.php']"):
-        href = a.get("href", "")
-        if "id=11" in href:
-            return True
+    ids = {
+        a["href"].split("id=")[-1]
+        for a in soup.select("a[href^='./game.php?id=']")
+        if a.get("href", "").split("id=")[-1].isdigit()
+    }
 
-    return False
-
+    return list(ids)
 
 def resolve_thegamesdb_ps2_game_page(search_url):
     try:
@@ -72,32 +47,33 @@ def resolve_thegamesdb_ps2_game_page(search_url):
         for game_id in game_ids:
             print(f"   🔍 Checking ID {game_id}")
 
-            if not is_ps2_game(game_id):
-                time.sleep(2)
-                continue
+            game_url = f"https://thegamesdb.net/game.php?id={game_id}"
 
-            print(f"   ✅ PS2 FOUND: {game_id}")
-            game_page_url = f"https://thegamesdb.net/game.php?id={game_id}"
+            r = requests.get(game_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+            r.raise_for_status()
 
-            # === FETCH GAME PAGE SEKALI ===
-            response = requests.get(
-                game_page_url,
-                headers=HEADERS,
-                timeout=REQUEST_TIMEOUT
+            soup = BeautifulSoup(r.text, "html.parser")
+
+            # === CEK PLATFORM PS2 ===
+            is_ps2 = any(
+                "id=11" in a.get("href", "")
+                for a in soup.select("a[href^='/platform.php']")
             )
-            response.raise_for_status()
 
-            soup = BeautifulSoup(response.text, "html.parser")
+            if not is_ps2:
+                time.sleep(DELAY_SECONDS)
+                continue
 
             # === AMBIL DESKRIPSI ===
             desc_p = soup.find("p", class_="game-overview")
-            description = (
-                desc_p.get_text(separator=" ", strip=True)
-                if desc_p else None
-            )
+            raw_desc = desc_p.get_text(" ", strip=True) if desc_p else ""
+
+            description = clean_text_for_csv(raw_desc)
+
+            print(f"   ✅ PS2 FOUND: {game_id}")
 
             return {
-                "gamePage": game_page_url,
+                "gamePage": game_url,
                 "description": description
             }
 
@@ -105,7 +81,6 @@ def resolve_thegamesdb_ps2_game_page(search_url):
         print(f"⚠️ Resolve gagal: {e}")
 
     return None
-
 
 
 def stage2_resolve_thegamesdb_game_page(input_file, output_file):
@@ -143,8 +118,8 @@ def stage2_resolve_thegamesdb_game_page(input_file, output_file):
                         result = resolve_thegamesdb_ps2_game_page(search_url)
 
                         if result:
-                            game_page = result.get('gamePage', '')
-                            description = result.get('description', '')
+                            game_page = result['gamePage'] if result else ""
+                            description = result['description'] if result else ""
 
                             success += 1
 

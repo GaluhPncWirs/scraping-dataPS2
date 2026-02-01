@@ -13,7 +13,6 @@ URL = "https://myrient.erista.me/files/Redump/Sony%20-%20PlayStation%202/"
 DELAY_MIN = 1  # Delay minimum dalam detik
 DELAY_MAX = 3  # Delay maximum dalam detik
 REQUEST_TIMEOUT = 10  # Timeout untuk request
-SKIP_ITEMS = ['Parent directory/', '..', '.', '../']
 SKIP_KEYWORDS = ['(demo)', '(beta)', '(sample)', '(trial)', '(proto)']
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 MAX_DATA = len(POPULAR_PS2_GAMES)
@@ -33,7 +32,7 @@ def get_base_name(filename):
     base = re.sub(r'\.[^.]+$', '', base)
     return base.strip()
 
-def normalize_title(title: str) -> str:
+def normalize_title(title):
     title = title.lower()
     title = re.sub(r"\(.*?\)", "", title)
     title = re.sub(r"[^a-z0-9\s]", "", title)
@@ -97,10 +96,6 @@ try:
             continue
 
         file_name = link.text.strip()
-
-        # Skip rule
-        if file_name in SKIP_ITEMS or file_name.endswith("/"):
-            continue
 
         if re.match(r"^\d+", file_name):
             continue
